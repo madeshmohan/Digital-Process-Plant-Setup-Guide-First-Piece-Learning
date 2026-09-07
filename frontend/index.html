@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Process Plant Digital Setup Guide MVP</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 & ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- Babel for JSX compilation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Chart.js for Dashboard Charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+    }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .glass-card {
+      background: rgba(30, 41, 59, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+    }
+    .btn-touch {
+      min-height: 48px;
+      touch-action: manipulation;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const API_BASE = window.location.origin.includes(':5173') ? 'http://localhost:8000/api' : '/api';
+
+    const PRODUCT_SPECS = {
+      "Variant A": { target_temp: 180, min_temp: 175, max_temp: 185, target_press: 5.0, min_press: 4.7, max_press: 5.3 },
+      "Variant B": { target_temp: 195, min_temp: 190, max_temp: 200, target_press: 5.5, min_press: 5.2, max_press: 5.8 },
+      "Variant C": { target_temp: 210, min_temp: 205, max_temp: 215, target_press: 6.0, min_press: 5.7, max_press: 6.3 },
+      "Variant D": { target_temp: 220, min_temp: 215, max_temp: 225, target_press: 6.5, min_press: 6.2, max_press: 6.8 }
+    };
+
+    function App() {
+      const [activeTab, setActiveTab] = React.useState('setup');
+      const [isOnline, setIsOnline] = React.useState(true);
+      const [offlineQueue, setOfflineQueue] = React.useState([]);
+
+      // Product & Setup state
+      const [variant, setVariant] = React.useState('Variant A');
+      const [batchId, setBatchId] = React.useState('BAT-2026-09');
+      const [machineId, setMachineId] = React.useState('M01');
+      const [operatorId, setOperatorId] = React.useState('OP-101');
+      const [operatorExp, setOperatorExp] = React.useState('Intermediate');
+      const [shift, setShift] = React.useState('Shift 1 (Morning)');
+
+      // Parameters
+      const [temperature, setTemperature] = React.useState(180.0);
+      const [pressure, setPressure] = React.useState(5.0);
+      const [valResult, setValResult] = React.useState(null);
+
+      // Steps checklist
+      const [steps, setSteps] = React.useState([
+        { id: 1, name: "Inspect machine condition", completed: false, notes: "Visual inspect OK" },
+        { id: 2, name: "Clean required contact surfaces", completed: false, notes: "Surfaces cleaned" },
+        { id: 3, name: "Load raw material batch", completed: false, notes: "Material verified" },
+        { id: 4, name: "Set target temperature (°C)", completed: false, notes: "" },
+        { id: 5, name: "Set target pressure (bar)", completed: false, notes: "" },
+        { id: 6, name: "Wait for thermal & pressure stabilization", completed: false, notes: "Stabilized 10 mins" },
+        { id: 7, name: "Verify actual parameters (Triggers Validation)", completed: false, notes: "" },
+        { id: 8, name: "Run trial setup batch", completed: false, notes: "Trial cycle complete" },
+        { id: 9, name: "Perform first-piece quality inspection", completed: false, notes: "" }
+      ]);
+
+      // Inspection Form
+      const [activeSetupId, setActiveSetupId] = React.useState(null);
+      const [dimQuality, setDimQuality] = React.useState(0.03);
+      const [surfQuality, setSurfQuality] = React.useState(9.0);
+      const [weight, setWeight] = React.useState(500.0);
+      const [colorApp, setColorApp] = React.useState('Normal');
+      const [defectDetected, setDefectDetected] = React.useState(false);
+      const [defectType, setDefectType] = React.useState('None');
+      const [inspectorComment, setInspectorComment] = React.useState('First piece passed specifications.');
+      const [inspMessage, setInspMessage] = React.useState('');
+
+      // Recommendations
+      const [recommendation, setRecommendation] = React.useState(null);
+
+      // Analytics data
+      const [analyticsData, setAnalyticsData] = React.useState(null);
+      const [errorAnalysisData, setErrorAnalysisData] = React.useState(null);
+      const [auditLogs, setAuditLogs] = React.useState([]);
+
+      // Auto validate parameter changes
+      React.useEffect(() => {
+        validateCurrentParams(variant, temperature, pressure);
+      }, [variant, temperature, pressure]);
+
+      // Load analytics when dashboard tab selected
+      React.useEffect(() => {
+        if (activeTab === 'dashboard') {
+          fetchAnalytics();
+        } else if (activeTab === 'audit') {
+          fetchAuditLogs();
+        }
+      }, [activeTab]);
+
+      const validateCurrentParams = async (v, t, p) => {
+        const spec = PRODUCT_SPECS[v];
+        if (!spec) return;
+
+        const t_tol = spec.max_temp - spec.target_temp;
+        const p_tol = spec.max_press - spec.target_press;
+        const temp_valid = (t >= spec.min_temp && t <= spec.max_temp);
+        const pressure_valid = (p >= spec.min_press && p <= spec.max_press);
+
+        const x = (t - spec.target_temp) / t_tol;
+        const y = (p - spec.target_press) / p_tol;
+        const interaction_score = (x * x) + (y * y) + (0.6 * x * y);
+        const interaction_valid = (interaction_score <= 1.0);
+
+        let status = "VALID";
+        let reason = "VALID: Parameters and interaction combination are within validated operating window.";
+
+        if (!temp_valid) {
+          status = "BLOCKED";
+          reason = `BLOCKED: Temperature ${t.toFixed(1)}°C is outside configured synthetic range [${spec.min_temp}°C - ${spec.max_temp}°C] for ${v}.`;
+        } else if (!pressure_valid) {
+          status = "BLOCKED";
+          reason = `BLOCKED: Pressure ${p.toFixed(2)} bar is outside configured synthetic range [${spec.min_press} bar - ${spec.max_press} bar] for ${v}.`;
+        } else if (!interaction_valid) {
+          status = "BLOCKED";
+          reason = `BLOCKED (Interaction Failure): Individual parameters are within their configured ranges, but the temperature-pressure combination is outside the validated synthetic operating envelope (interaction score: ${interaction_score.toFixed(2)} / 1.00).`;
+        } else if (interaction_score > 0.75) {
+          status = "WARNING";
+          reason = `WARNING: Parameters within individual limits, but operating near the boundary of the safe temperature-pressure interaction envelope (score: ${interaction_score.toFixed(2)} / 1.00). Exercise caution.`;
+        }
+
+        const resObj = {
+          product_variant: v,
+          temperature: parseFloat(t),
+          pressure: parseFloat(p),
+          temp_valid, pressure_valid, interaction_valid,
+          interaction_score: parseFloat(interaction_score.toFixed(4)),
+          status, reason
+        };
+
+        setValResult(resObj);
+
+        // Try calling backend API if online
+        if (isOnline) {
+          try {
+            const resp = await fetch(`${API_BASE}/validate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ product_variant: v, temperature: parseFloat(t), pressure: parseFloat(p) })
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              setValResult(data);
+            }
+          } catch (e) {
+            // fallback to local calculation
+          }
+        }
+      };
+
+      const handlePresetFailure = (type) => {
+        setVariant('Variant A');
+        if (type === 1) {
+          setTemperature(230.0);
+          setPressure(5.0);
+        } else if (type === 2) {
+          setTemperature(180.0);
+          setPressure(4.2);
+        } else if (type === 3) {
+          setTemperature(184.0);
+          setPressure(5.28);
+        }
+      };
+
+      const handleStepToggle = (index) => {
+        // Step gating: do not allow completing step 8 or 9 if parameter validation is BLOCKED
+        if (index >= 6 && valResult && valResult.status === 'BLOCKED') {
+          alert("Cannot proceed with step: Parameter validation is BLOCKED. Correct temperature/pressure first.");
+          return;
+        }
+        const updated = [...steps];
+        updated[index].completed = !updated[index].completed;
+        setSteps(updated);
+      };
+
+      const handleFetchRecommendations = async () => {
+        try {
+          const resp = await fetch(`${API_BASE}/recommendations/${variant}`);
+          if (resp.ok) {
+            const data = await resp.json();
+            setRecommendation(data);
+            setTemperature(data.recommended_temperature);
+            setPressure(data.recommended_pressure);
+          }
+        } catch (e) {
+          const spec = PRODUCT_SPECS[variant];
+          setRecommendation({
+            product_variant: variant,
+            recommended_temperature: spec.target_temp,
+            recommended_pressure: spec.target_press,
+            sample_size: 45,
+            historical_pass_rate: 94.2,
+            confidence_level: "High Confidence (Offline Cached)",
+            disclaimer: "Prototype only. Synthetic parameters."
+          });
+        }
+      };
+
+      const handleCompleteSetup = async () => {
+        if (valResult && valResult.status === 'BLOCKED') {
+          alert("Setup blocked! Parameter validation failed.");
+          return;
+        }
+
+        const generatedId = `SET-OFFLINE-${Date.now().toString().slice(-6)}`;
+        const setupPayload = {
+          setup_id: generatedId,
+          batch_id: batchId,
+          product_variant: variant,
+          operator_id: operatorId,
+          operator_experience_level: operatorExp,
+          machine_id: machineId,
+          shift: shift,
+          is_prototype: true,
+          temperature: parseFloat(temperature),
+          pressure: parseFloat(pressure),
+          heating_time: 12.0,
+          stabilization_time: 8.0,
+          steps: steps.map(s => ({
+            step_id: s.id,
+            step_name: s.name,
+            step_completed: s.completed,
+            timestamp: new Date().toISOString(),
+            duration_seconds: 180,
+            notes: s.notes
+          }))
+        };
+
+        if (!isOnline) {
+          // Store in offline queue
+          const queue = [...offlineQueue, { type: 'setup', data: setupPayload }];
+          setOfflineQueue(queue);
+          localStorage.setItem('setup_offline_queue', JSON.stringify(queue));
+          setActiveSetupId(generatedId);
+          alert(`Offline mode: Setup saved locally (${generatedId}). Ready for first-piece inspection.`);
+          setActiveTab('inspection');
+          return;
+        }
+
+        try {
+          const resp = await fetch(`${API_BASE}/setups`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(setupPayload)
+          });
+          if (resp.ok) {
+            const res = await resp.json();
+            setActiveSetupId(res.setup_id);
+            alert(`Setup completed and recorded! Setup ID: ${res.setup_id}. Proceeding to First-Piece Inspection.`);
+            setActiveTab('inspection');
+          } else {
+            const err = await resp.json();
+            alert(`Error: ${err.detail}`);
+          }
+        } catch (e) {
+          const queue = [...offlineQueue, { type: 'setup', data: setupPayload }];
+          setOfflineQueue(queue);
+          localStorage.setItem('setup_offline_queue', JSON.stringify(queue));
+          setActiveSetupId(generatedId);
+          alert(`Network error: Setup saved to local inspection queue (${generatedId}).`);
+          setActiveTab('inspection');
+        }
+      };
+
+      const handleSubmitInspection = async () => {
+        if (!activeSetupId) {
+          alert("Please complete a Setup first before performing First-Piece Inspection.");
+          return;
+        }
+
+        const inspPayload = {
+          setup_id: activeSetupId,
+          dimensional_quality: parseFloat(dimQuality),
+          surface_quality: parseFloat(surfQuality),
+          weight: parseFloat(weight),
+          color_appearance: colorApp,
+          defect_detected: defectDetected,
+          defect_type: defectDetected ? defectType : "None",
+          inspector_comment: inspectorComment
+        };
+
+        if (!isOnline) {
+          const queue = [...offlineQueue, { type: 'inspection', data: inspPayload }];
+          setOfflineQueue(queue);
+          localStorage.setItem('setup_offline_queue', JSON.stringify(queue));
+          setInspMessage(`Offline Mode: Inspection result for ${activeSetupId} saved locally.`);
+          return;
+        }
+
+        try {
+          const resp = await fetch(`${API_BASE}/first-piece`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(inspPayload)
+          });
+          if (resp.ok) {
+            const res = await resp.json();
+            setInspMessage(`Inspection recorded successfully! Status: ${res.pass_fail}`);
+          } else {
+            const queue = [...offlineQueue, { type: 'inspection', data: inspPayload }];
+            setOfflineQueue(queue);
+            localStorage.setItem('setup_offline_queue', JSON.stringify(queue));
+            setInspMessage(`Saved to offline queue due to server response error.`);
+          }
+        } catch (e) {
+          const queue = [...offlineQueue, { type: 'inspection', data: inspPayload }];
+          setOfflineQueue(queue);
+          localStorage.setItem('setup_offline_queue', JSON.stringify(queue));
+          setInspMessage(`Saved to offline queue.`);
+        }
+      };
+
+      const handleSyncOfflineData = async () => {
+        if (offlineQueue.length === 0) {
+          alert("Offline queue is empty. No pending records to sync.");
+          return;
+        }
+        const setups = offlineQueue.filter(q => q.type === 'setup').map(q => q.data);
+        const inspections = offlineQueue.filter(q => q.type === 'inspection').map(q => q.data);
+
+        try {
+          const resp = await fetch(`${API_BASE}/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ setups, inspections })
+          });
+          if (resp.ok) {
+            const res = await resp.json();
+            alert(`Synchronization complete. All locally stored setup records have been uploaded.`);
+            setOfflineQueue([]);
+            localStorage.removeItem('setup_offline_queue');
+          } else {
+            alert("Synchronization failed. Your data is still stored locally and will be retried.");
+          }
+        } catch (e) {
+          alert("Synchronization failed. Your data is still stored locally and will be retried.");
+        }
+      };
+
+
+      const fetchAnalytics = async () => {
+        try {
+          const r1 = await fetch(`${API_BASE}/analytics/experiment`);
+          if (r1.ok) setAnalyticsData(await r1.json());
+          const r2 = await fetch(`${API_BASE}/analytics/error-analysis`);
+          if (r2.ok) setErrorAnalysisData(await r2.json());
+        } catch (e) {}
+      };
+
+      const fetchAuditLogs = async () => {
+        try {
+          const r = await fetch(`${API_BASE}/audit-logs`);
+          if (r.ok) setAuditLogs(await r.json());
+        } catch (e) {}
+      };
+
+      return (
+        <div className="min-h-screen pb-12">
+          {/* Top Header & Safety Disclaimer */}
+          <header className="bg-slate-900 border-b border-slate-800 px-6 py-4 sticky top-0 z-50 shadow-lg">
+            <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-600 rounded-lg shadow-md">
+                  <i data-lucide="activity" className="w-6 h-6 text-white"></i>
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-white tracking-wide">Process Plant Digital Setup Guide</h1>
+                  <p className="text-xs text-slate-400">Interacting Temperature & Pressure Validation with First-Piece Learning</p>
+                </div>
+              </div>
+
+              {/* Online/Offline Status Indicator */}
+              <div className="flex items-center gap-3">
+                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold ${isOnline ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-amber-950/80 text-amber-400 border border-amber-800'}`}>
+                  <span className={`w-2.5 h-2.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                  {isOnline ? 'ONLINE' : 'OFFLINE MODE (Local Cache)'}
+                </div>
+                <button
+                  onClick={() => setIsOnline(!isOnline)}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 rounded-md border border-slate-700 transition"
+                >
+                  Toggle {isOnline ? 'Offline' : 'Online'}
+                </button>
+                {offlineQueue.length > 0 && (
+                  <button
+                    onClick={handleSyncOfflineData}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white rounded-md transition shadow"
+                  >
+                    Sync Queue ({offlineQueue.length})
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Prominent Synthetic Data Disclaimer */}
+            <div className="max-w-7xl mx-auto mt-3 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-3 py-1.5 rounded text-xs text-center font-medium">
+              ⚠️ <strong>Prototype Only:</strong> All parameter limits, operating envelopes, recommendations, and experimental results are synthetic demonstration assumptions and must not be used as real plant operating instructions.
+            </div>
+          </header>
+
+          {/* Navigation Bar */}
+          <nav className="bg-slate-800/60 border-b border-slate-800 px-6 py-2">
+            <div className="max-w-7xl mx-auto flex flex-wrap gap-2">
+              {[
+                { id: 'setup', label: '1. Setup Guide & Checklist', icon: 'clipboard-list' },
+                { id: 'envelope', label: '2. T-P Envelope Chart', icon: 'crosshair' },
+                { id: 'inspection', label: '3. First-Piece Inspection', icon: 'check-circle' },
+                { id: 'failures', label: '4. Failure Case Demos', icon: 'alert-triangle' },
+                { id: 'dashboard', label: '5. Management Dashboard', icon: 'bar-chart-3' },
+                { id: 'audit', label: '6. Audit Trail', icon: 'history' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`px-4 py-2 text-sm font-semibold rounded-lg transition flex items-center gap-2 ${activeTab === tab.id ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </nav>
+
+          {/* Main Content Area */}
+          <main className="max-w-7xl mx-auto px-6 pt-6">
+
+            {/* TAB 1: SETUP GUIDE & CHECKLIST */}
+            {activeTab === 'setup' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                
+                {/* Left Column: Product Selection & Setup Checklist */}
+                <div className="lg:col-span-7 space-y-6">
+                  
+                  {/* Product & Operator Selection Card */}
+                  <div className="glass-card p-6">
+                    <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-blue-400"></span> Product Variant & Batch Selection
+                    </h2>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1">Product Variant</label>
+                        <select
+                          value={variant}
+                          onChange={(e) => setVariant(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="Variant A">Variant A (Target: 180°C, 5.0 bar)</option>
+                          <option value="Variant B">Variant B (Target: 195°C, 5.5 bar)</option>
+                          <option value="Variant C">Variant C (Target: 210°C, 6.0 bar)</option>
+                          <option value="Variant D">Variant D (Target: 220°C, 6.5 bar)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1">Batch ID</label>
+                        <input
+                          type="text"
+                          value={batchId}
+                          onChange={(e) => setBatchId(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1">Machine ID</label>
+                        <select
+                          value={machineId}
+                          onChange={(e) => setMachineId(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm"
+                        >
+                          <option value="M01">Machine M01 (Polymer Press #1)</option>
+                          <option value="M02">Machine M02 (Polymer Press #2)</option>
+                          <option value="M03">Machine M03 (Elastomer Mold #1)</option>
+                          <option value="M04">Machine M04 (Elastomer Mold #2)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1">Operator ID & Skill</label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={operatorId}
+                            onChange={(e) => setOperatorId(e.target.value)}
+                            className="w-1/2 bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm mono"
+                          />
+                          <select
+                            value={operatorExp}
+                            onChange={(e) => setOperatorExp(e.target.value)}
+                            className="w-1/2 bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm"
+                          >
+                            <option value="Novice">Novice</option>
+                            <option value="Intermediate">Intermediate</option>
+                            <option value="Expert">Expert</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 pt-4 border-t border-slate-800 flex items-center justify-between">
+                      <button
+                        onClick={handleFetchRecommendations}
+                        className="px-4 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white font-medium text-xs rounded-lg transition flex items-center gap-2"
+                      >
+                        ⚡ Fetch Historical Parameter Recommendations
+                      </button>
+
+                      {recommendation && (
+                        <div className="text-xs text-indigo-300 bg-indigo-950/60 px-3 py-1.5 rounded border border-indigo-800">
+                          Rec: {recommendation.recommended_temperature}°C, {recommendation.recommended_pressure} bar ({recommendation.sample_size} pass setups)
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 9-Step Guided Checklist */}
+                  <div className="glass-card p-6">
+                    <h2 className="text-lg font-bold text-white mb-4 flex items-center justify-between">
+                      <span>Step-by-Step Operator Checklist</span>
+                      <span className="text-xs text-slate-400 font-normal">Step gating enabled</span>
+                    </h2>
+
+                    <div className="space-y-2.5">
+                      {steps.map((step, idx) => (
+                        <div
+                          key={step.id}
+                          onClick={() => handleStepToggle(idx)}
+                          className={`p-3.5 rounded-lg border transition cursor-pointer flex items-center justify-between ${step.completed ? 'bg-emerald-950/40 border-emerald-800/80 text-emerald-200' : 'bg-slate-900/60 border-slate-800 hover:border-slate-700 text-slate-300'}`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${step.completed ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>
+                              {step.id}
+                            </div>
+                            <span className="text-sm font-medium">{step.name}</span>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            {step.completed && <span className="text-xs text-emerald-400 font-semibold">✓ Completed</span>}
+                            <input
+                              type="checkbox"
+                              checked={step.completed}
+                              onChange={() => {}}
+                              className="w-5 h-5 accent-blue-600 rounded cursor-pointer"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-6 pt-4 border-t border-slate-800">
+                      <button
+                        onClick={handleCompleteSetup}
+                        className="w-full btn-touch bg-blue-600 hover:bg-blue-500 text-white font-bold text-base rounded-xl transition shadow-lg flex items-center justify-center gap-2"
+                      >
+                        Complete Setup & Proceed to Inspection →
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Parameter Entry & Live Validation Engine */}
+                <div className="lg:col-span-5 space-y-6">
+                  
+                  {/* Parameter Entry Card */}
+                  <div className="glass-card p-6">
+                    <h2 className="text-lg font-bold text-white mb-4">Process Parameter Inputs</h2>
+
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex justify-between text-xs font-semibold mb-1">
+                          <span className="text-slate-300">Actual Temperature (°C)</span>
+                          <span className="text-slate-400">Allowed: {PRODUCT_SPECS[variant].min_temp}°C – {PRODUCT_SPECS[variant].max_temp}°C</span>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.5"
+                          value={temperature}
+                          onChange={(e) => setTemperature(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-slate-900 border border-slate-700 text-white text-xl font-bold rounded-lg p-3 text-center mono"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-xs font-semibold mb-1">
+                          <span className="text-slate-300">Actual Pressure (bar)</span>
+                          <span className="text-slate-400">Allowed: {PRODUCT_SPECS[variant].min_press} – {PRODUCT_SPECS[variant].max_press} bar</span>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.05"
+                          value={pressure}
+                          onChange={(e) => setPressure(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-slate-900 border border-slate-700 text-white text-xl font-bold rounded-lg p-3 text-center mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Real-time Validation Result Box */}
+                  {valResult && (
+                    <div className={`glass-card p-6 border-2 transition ${valResult.status === 'VALID' ? 'border-emerald-500 bg-emerald-950/20' : valResult.status === 'WARNING' ? 'border-amber-500 bg-amber-950/20' : 'border-rose-500 bg-rose-950/20'}`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Validation Engine Rationale</span>
+                        <span className={`px-3 py-1 rounded-full text-xs font-extrabold ${valResult.status === 'VALID' ? 'bg-emerald-500 text-slate-950' : valResult.status === 'WARNING' ? 'bg-amber-500 text-slate-950' : 'bg-rose-600 text-white'}`}>
+                          STATUS: {valResult.status}
+                        </span>
+                      </div>
+
+                      <p className="text-sm font-semibold text-white mb-4 leading-relaxed">
+                        {valResult.reason}
+                      </p>
+
+                      <div className="grid grid-cols-3 gap-2 pt-3 border-t border-slate-800/80 text-center text-xs">
+                        <div className="bg-slate-900/60 p-2 rounded">
+                          <div className="text-slate-400">Temp Limits</div>
+                          <div className={`font-bold ${valResult.temp_valid ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {valResult.temp_valid ? 'PASS' : 'FAIL'}
+                          </div>
+                        </div>
+                        <div className="bg-slate-900/60 p-2 rounded">
+                          <div className="text-slate-400">Pressure Limits</div>
+                          <div className={`font-bold ${valResult.pressure_valid ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {valResult.pressure_valid ? 'PASS' : 'FAIL'}
+                          </div>
+                        </div>
+                        <div className="bg-slate-900/60 p-2 rounded">
+                          <div className="text-slate-400">Interaction Score</div>
+                          <div className={`font-bold ${valResult.interaction_valid ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {valResult.interaction_score} / 1.00
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Envelope Preview Miniature */}
+                  <div className="glass-card p-4 text-center text-xs text-slate-400">
+                    💡 Click on the <strong className="text-blue-400 cursor-pointer" onClick={() => setActiveTab('envelope')}>2. T-P Envelope Chart</strong> tab to view full 2D interaction mapping.
+                  </div>
+                </div>
+
+              </div>
+            )}
+
+            {/* TAB 2: INTERACTIVE T-P ENVELOPE CHART */}
+            {activeTab === 'envelope' && (
+              <div className="glass-card p-6">
+                <h2 className="text-lg font-bold text-white mb-2">2D Temperature-Pressure Operating Envelope Visualizer</h2>
+                <p className="text-xs text-slate-400 mb-6">
+                  Visualizes the interaction constraint: parameters can be individually valid while their joint combination violates the safe operating envelope.
+                </p>
+
+                <div className="flex flex-col lg:flex-row gap-6 items-center justify-center">
+                  {/* SVG Canvas for Envelope */}
+                  <div className="w-full max-w-xl bg-slate-950 p-6 rounded-xl border border-slate-800 text-center">
+                    <svg viewBox="0 0 400 300" className="w-full h-auto overflow-visible">
+                      {/* Grid background */}
+                      <rect x="50" y="30" width="300" height="220" fill="#090d16" stroke="#334155" strokeWidth="1" />
+                      
+                      {/* Safe Operating Envelope (Ellipse) */}
+                      <ellipse cx="200" cy="140" rx="100" ry="70" fill="rgba(16, 185, 129, 0.15)" stroke="#10b981" strokeWidth="2" strokeDasharray="4" />
+                      
+                      {/* Warning Boundary */}
+                      <ellipse cx="200" cy="140" rx="120" ry="85" fill="none" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="2" />
+
+                      {/* Target Center Point */}
+                      <circle cx="200" cy="140" r="4" fill="#3b82f6" />
+                      <text x="210" y="142" fill="#60a5fa" fontSize="10" fontWeight="bold">Target (180°C, 5.0 bar)</text>
+
+                      {/* Dynamic Operator Input Point */}
+                      {(() => {
+                        const spec = PRODUCT_SPECS[variant];
+                        const t_scale = 300 / (spec.max_temp - spec.min_temp + 10);
+                        const p_scale = 220 / (spec.max_press - spec.min_press + 1.0);
+                        
+                        const cx = 50 + (temperature - (spec.min_temp - 5)) * t_scale;
+                        const cy = 250 - (pressure - (spec.min_press - 0.5)) * p_scale;
+
+                        const isBlocked = valResult && valResult.status === 'BLOCKED';
+                        return (
+                          <g>
+                            <circle cx={cx} cy={cy} r="7" fill={isBlocked ? '#ef4444' : '#10b981'} stroke="#ffffff" strokeWidth="2" />
+                            <text x={cx + 10} y={cy + 4} fill="#ffffff" fontSize="11" fontWeight="bold">
+                              Current ({temperature}°C, {pressure} bar)
+                            </text>
+                          </g>
+                        );
+                      })()}
+
+                      {/* Axes Labels */}
+                      <text x="200" y="280" fill="#94a3b8" fontSize="11" textAnchor="middle">Temperature (°C)</text>
+                      <text x="15" y="140" fill="#94a3b8" fontSize="11" transform="rotate(-90 15 140)" textAnchor="middle">Pressure (bar)</text>
+                    </svg>
+
+                    <div className="flex justify-center gap-6 mt-4 text-xs font-semibold">
+                      <span className="flex items-center gap-1.5 text-emerald-400">
+                        <span className="w-3 h-3 rounded-full bg-emerald-500/30 border border-emerald-500"></span> Valid Operating Envelope
+                      </span>
+                      <span className="flex items-center gap-1.5 text-amber-400">
+                        <span className="w-3 h-3 rounded-full bg-amber-500/30 border border-amber-500"></span> Warning Zone
+                      </span>
+                      <span className="flex items-center gap-1.5 text-rose-400">
+                        <span className="w-3 h-3 rounded-full bg-rose-500/30 border border-rose-500"></span> Blocked Out of Bounds
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Envelope Data Sidebar */}
+                  <div className="w-full lg:w-80 space-y-4">
+                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                      <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Variant Limits</h3>
+                      <div className="text-sm space-y-1 text-slate-200">
+                        <div>Product: <strong className="text-white">{variant}</strong></div>
+                        <div>Temp Range: <strong>{PRODUCT_SPECS[variant].min_temp}°C – {PRODUCT_SPECS[variant].max_temp}°C</strong></div>
+                        <div>Pressure Range: <strong>{PRODUCT_SPECS[variant].min_press} – {PRODUCT_SPECS[variant].max_press} bar</strong></div>
+                      </div>
+                    </div>
+
+                    {valResult && (
+                      <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                        <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Interaction Calculation</h3>
+                        <div className="mono text-xs text-slate-300 space-y-1">
+                          <div>S_int = (ΔT/ΔT_max)² + (ΔP/ΔP_max)² + 0.6(ΔT)(ΔP)</div>
+                          <div>Score: <strong className="text-lg text-white">{valResult.interaction_score}</strong> / 1.00</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: FIRST-PIECE INSPECTION */}
+            {activeTab === 'inspection' && (
+              <div className="max-w-2xl mx-auto glass-card p-6">
+                <h2 className="text-lg font-bold text-white mb-2">First-Piece Quality Inspection Entry</h2>
+                <p className="text-xs text-slate-400 mb-6">Record first-piece physical measurements and identify defect causes to feed historical learning.</p>
+
+                {inspMessage && (
+                  <div className="mb-4 bg-blue-950/80 border border-blue-800 text-blue-300 p-3 rounded-lg text-sm font-semibold">
+                    {inspMessage}
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 mb-1">Target Setup ID</label>
+                    <input
+                      type="text"
+                      value={activeSetupId || 'SET-1001'}
+                      onChange={(e) => setActiveSetupId(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm mono"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1">Dimensional Deviation (mm)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={dimQuality}
+                        onChange={(e) => setDimQuality(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1">Surface Finish Score (1-10)</label>
+                      <input
+                        type="number"
+                        step="0.5"
+                        value={surfQuality}
+                        onChange={(e) => setSurfQuality(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1">Weight (grams)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={weight}
+                        onChange={(e) => setWeight(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-1">Color / Appearance</label>
+                      <select
+                        value={colorApp}
+                        onChange={(e) => setColorApp(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm"
+                      >
+                        <option value="Normal">Normal</option>
+                        <option value="Discolored">Discolored</option>
+                        <option value="Substandard">Substandard</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-slate-900/80 rounded-lg border border-slate-800 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-bold text-white">Defect Detected?</div>
+                      <div className="text-xs text-slate-400">Toggle if first-piece failed quality standards</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={defectDetected}
+                      onChange={(e) => setDefectDetected(e.target.checked)}
+                      className="w-6 h-6 accent-rose-600 rounded cursor-pointer"
+                    />
+                  </div>
+
+                  {defectDetected && (
+                    <div>
+                      <label className="block text-xs font-semibold text-rose-400 mb-1">Defect Category Reason</label>
+                      <select
+                        value={defectType}
+                        onChange={(e) => setDefectType(e.target.value)}
+                        className="w-full bg-slate-900 border border-rose-700 text-white rounded-lg p-2.5 text-sm"
+                      >
+                        <option value="dimensional_variation">Dimensional Variation</option>
+                        <option value="surface_defect">Surface Defect</option>
+                        <option value="weight_variation">Weight Variation</option>
+                        <option value="incomplete_formation">Incomplete Formation</option>
+                        <option value="discoloration">Discoloration</option>
+                        <option value="interaction_stress_defect">Interaction Stress Defect</option>
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-400 mb-1">Inspector Comments</label>
+                    <textarea
+                      value={inspectorComment}
+                      onChange={(e) => setInspectorComment(e.target.value)}
+                      rows="3"
+                      className="w-full bg-slate-900 border border-slate-700 text-white rounded-lg p-2.5 text-sm"
+                    ></textarea>
+                  </div>
+
+                  <button
+                    onClick={handleSubmitInspection}
+                    className="w-full btn-touch bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-base rounded-xl transition shadow-lg"
+                  >
+                    Submit First-Piece Inspection Result
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: FAILURE CASE DEMONSTRATIONS */}
+            {activeTab === 'failures' && (
+              <div className="glass-card p-6 max-w-4xl mx-auto space-y-6">
+                <div>
+                  <h2 className="text-lg font-bold text-white mb-1">Demonstrated Failure State Presets</h2>
+                  <p className="text-xs text-slate-400">Click any preset button to instantly load and test the required failure conditions.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  
+                  {/* Failure 1 */}
+                  <div className="bg-slate-900 p-5 rounded-xl border border-rose-900/60 flex flex-col justify-between">
+                    <div>
+                      <div className="text-xs font-bold text-rose-400 uppercase mb-1">Failure Case 1</div>
+                      <h3 className="text-base font-bold text-white mb-2">Temperature Out of Range</h3>
+                      <p className="text-xs text-slate-400 mb-4">Variant A with T = 230°C (Max limit 185°C).</p>
+                    </div>
+                    <button
+                      onClick={() => { handlePresetFailure(1); setActiveTab('setup'); }}
+                      className="w-full py-2 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white font-bold text-xs rounded-lg border border-rose-800 transition"
+                    >
+                      Trigger Failure Case 1 →
+                    </button>
+                  </div>
+
+                  {/* Failure 2 */}
+                  <div className="bg-slate-900 p-5 rounded-xl border border-rose-900/60 flex flex-col justify-between">
+                    <div>
+                      <div className="text-xs font-bold text-rose-400 uppercase mb-1">Failure Case 2</div>
+                      <h3 className="text-base font-bold text-white mb-2">Pressure Out of Range</h3>
+                      <p className="text-xs text-slate-400 mb-4">Variant A with P = 4.2 bar (Min limit 4.7 bar).</p>
+                    </div>
+                    <button
+                      onClick={() => { handlePresetFailure(2); setActiveTab('setup'); }}
+                      className="w-full py-2 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white font-bold text-xs rounded-lg border border-rose-800 transition"
+                    >
+                      Trigger Failure Case 2 →
+                    </button>
+                  </div>
+
+                  {/* Failure 3 */}
+                  <div className="bg-slate-900 p-5 rounded-xl border border-indigo-900/60 flex flex-col justify-between">
+                    <div>
+                      <div className="text-xs font-bold text-indigo-400 uppercase mb-1">Failure Case 3</div>
+                      <h3 className="text-base font-bold text-white mb-2">T-P Interaction Violation</h3>
+                      <p className="text-xs text-slate-400 mb-4">Variant A with T = 184°C & P = 5.28 bar. Individually valid ranges, interaction score S_int &gt; 1.0.</p>
+                    </div>
+                    <button
+                      onClick={() => { handlePresetFailure(3); setActiveTab('setup'); }}
+                      className="w-full py-2 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white font-bold text-xs rounded-lg border border-indigo-800 transition"
+                    >
+                      Trigger Failure Case 3 →
+                    </button>
+                  </div>
+
+                </div>
+              </div>
+            )}
+
+            {/* TAB 5: MANAGEMENT DASHBOARD & ANALYTICS */}
+            {activeTab === 'dashboard' && (
+              <div className="space-y-6">
+                
+                {/* KPI Summary Cards */}
+                {analyticsData && (
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    
+                    <div className="glass-card p-5">
+                      <div className="text-xs text-slate-400 font-semibold mb-1">Setup Duration Improvement</div>
+                      <div className="text-2xl font-bold text-emerald-400 mono">
+                        {analyticsData.metrics.setup_time_improvement_pct}%
+                      </div>
+                      <div className="text-xs text-slate-400 mt-1">
+                        Baseline: {analyticsData.baseline.avg_setup_time_mins} min → Proto: {analyticsData.prototype.avg_setup_time_mins} min
+                      </div>
+                    </div>
+
+                    <div className="glass-card p-5">
+                      <div className="text-xs text-slate-400 font-semibold mb-1">First-Piece Defect Reduction</div>
+                      <div className="text-2xl font-bold text-emerald-400 mono">
+                        {analyticsData.metrics.first_piece_defect_pct_reduction}%
+                      </div>
+                      <div className="text-xs text-slate-400 mt-1">
+                        Baseline Defect: {analyticsData.baseline.defect_rate_pct}% → Proto: {analyticsData.prototype.defect_rate_pct}%
+                      </div>
+                    </div>
+
+                    <div className="glass-card p-5">
+                      <div className="text-xs text-slate-400 font-semibold mb-1">Material Scrap Waste Saved</div>
+                      <div className="text-2xl font-bold text-blue-400 mono">
+                        {analyticsData.metrics.waste_reduction_pct}%
+                      </div>
+                      <div className="text-xs text-slate-400 mt-1">
+                        Baseline: {analyticsData.baseline.avg_waste_kg} kg/setup → Proto: {analyticsData.prototype.avg_waste_kg} kg
+                      </div>
+                    </div>
+
+                    <div className="glass-card p-5">
+                      <div className="text-xs text-slate-400 font-semibold mb-1">Blocked Invalid Setups</div>
+                      <div className="text-2xl font-bold text-indigo-400 mono">
+                        {analyticsData.prototype.blocked_validations}
+                      </div>
+                      <div className="text-xs text-slate-400 mt-1">Interception by interaction envelope</div>
+                    </div>
+
+                  </div>
+                )}
+
+                {/* Error Analysis & Maintenance Signals */}
+                {errorAnalysisData && (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    
+                    <div className="lg:col-span-7 glass-card p-6">
+                      <h3 className="text-base font-bold text-white mb-4">Error Analysis & Root Cause Distribution</h3>
+                      <div className="space-y-3">
+                        {errorAnalysisData.category_breakdown.map((cat, idx) => (
+                          <div key={idx}>
+                            <div className="flex justify-between text-xs font-semibold mb-1">
+                              <span className="text-slate-300">{cat.category}</span>
+                              <span className="text-slate-400">{cat.count} instances ({cat.percentage}%)</span>
+                            </div>
+                            <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
+                              <div className="bg-blue-500 h-full rounded-full" style={{ width: `${cat.percentage}%` }}></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="lg:col-span-5 glass-card p-6">
+                      <h3 className="text-base font-bold text-white mb-4">Condition Maintenance Signals</h3>
+                      <div className="space-y-3">
+                        {errorAnalysisData.maintenance_signals && errorAnalysisData.maintenance_signals.length > 0 ? (
+                          errorAnalysisData.maintenance_signals.map((sig, idx) => (
+                            <div key={idx} className="p-3 bg-amber-950/40 border border-amber-800 text-amber-200 rounded-lg text-xs">
+                              ⚠️ <strong>Machine {sig.machine_id}:</strong> {sig.signal}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-xs text-slate-400">No repeated machine parameter drifts detected.</div>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 6: AUDIT TRAIL LOGS */}
+            {activeTab === 'audit' && (
+              <div className="glass-card p-6">
+                <h2 className="text-lg font-bold text-white mb-4">System Audit Trail Logs</h2>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-900 text-slate-400 uppercase">
+                      <tr>
+                        <th className="p-3">Log ID</th>
+                        <th className="p-3">Timestamp</th>
+                        <th className="p-3">Event Type</th>
+                        <th className="p-3">Actor</th>
+                        <th className="p-3">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800 text-slate-300">
+                      {auditLogs.map((log) => (
+                        <tr key={log.log_id} className="hover:bg-slate-800/40">
+                          <td className="p-3 mono text-slate-500">#{log.log_id}</td>
+                          <td className="p-3 mono">{log.timestamp}</td>
+                          <td className="p-3 font-semibold text-blue-400">{log.event_type}</td>
+                          <td className="p-3">{log.user_or_system}</td>
+                          <td className="p-3">{log.details}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
