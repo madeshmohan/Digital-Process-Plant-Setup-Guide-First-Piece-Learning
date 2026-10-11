@@ -1,0 +1,49 @@
+{
+  "disclaimer": "Prototype only. All parameter limits, operating envelopes, recommendations, and experimental results are synthetic demonstration assumptions and must not be used as real plant operating instructions.",
+  "benchmark_runs": [
+    {
+      "sample_size": 50,
+      "baseline": {
+        "avg_setup_time_mins": 43.91,
+        "setup_time_std": 4.93,
+        "defect_rate_pct": 42.0,
+        "defect_rate_ci_95": 13.68,
+        "avg_waste_kg": 4.16
+      },
+      "prototype": {
+        "avg_setup_time_mins": 26.69,
+        "setup_time_std": 3.35,
+        "defect_rate_pct": 4.0,
+        "defect_rate_ci_95": 5.43,
+        "avg_waste_kg": 1.29
+      },
+      "improvements": {
+        "setup_time_improvement_pct": 39.22,
+        "defect_rate_reduction_pct": 90.48,
+        "waste_reduction_pct": 68.96
+      }
+    },
+    {
+      "sample_size": 100,
+      "baseline": {
+        "avg_setup_time_mins": 44.16,
+        "setup_time_std": 4.46,
+        "defect_rate_pct": 45.0,
+        "defect_rate_ci_95": 9.75,
+        "avg_waste_kg": 4.47
+      },
+      "prototype": {
+        "avg_setup_time_mins": 27.75,
+        "setup_time_std": 3.34,
+        "defect_rate_pct": 2.0,
+        "defect_rate_ci_95": 2.74,
+        "avg_waste_kg": 1.11
+      },
+      "improvements": {
+        "setup_time_improvement_pct": 37.16,
+        "defect_rate_reduction_pct": 95.56,
+        "waste_reduction_pct": 75.03
+      }
+    }
+  ]
+}
